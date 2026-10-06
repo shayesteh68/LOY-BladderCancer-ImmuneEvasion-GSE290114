@@ -1,7 +1,26 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  restore_loy_inputs.sh      version 1.0.0
+#  restore_loy_inputs.sh      version 1.0.1
 #  Project : LOY / GSE290114   (repo: github.com/shayesteh68)
+#
+#  CHANGELOG
+#    1.0.1 - terminal-safety release, fixes the observed exit code 141.
+#            * the logging line "exec > >(tee -a LOG) 2>&1" is gone. A process
+#              substitution on stdout plus "set -o pipefail" is what allowed a
+#              downstream SIGPIPE to end the whole terminal shell with 141.
+#            * every "writer | head" pipe is gone, because such a pipe makes the
+#              writer die of SIGPIPE (128+13 = 141):
+#                 gzip -dc counts.gz | head -n 1
+#                 grep -oE ... | sort -u | head -n 200
+#                 find ~ | while ... | head -n 1
+#              All three now read their input to the end, which cannot raise
+#              SIGPIPE. This was the line that killed the run.
+#            * logging appends to the log file directly, with no pipe at all.
+#            * curl no longer paints the \r progress bar, which overwrote the
+#              real message on the terminal line.
+#            * an ERR trap now prints the exact failing command and line.
+#            * refuses to run when source'd / dot-sourced.
+#    1.0.0 - first release.
 #
 #  WHAT IT DOES (one run, one command):
 #    1. finds the LOY repository on this machine and verifies its git remote,
@@ -21,16 +40,30 @@
 #  It never overwrites or recomputes anything inside results/.
 #  It stops with a FATAL message instead of guessing when a mapping is unclear.
 #
-#  USAGE
+# USAGE_BEGIN
 #    bash restore_loy_inputs.sh            # restore + validate + commit locally
 #    bash restore_loy_inputs.sh --push     # same, and push to origin afterwards
 #    bash restore_loy_inputs.sh --repo /full/path/to/repo   # only if auto-detect fails
 #
+#    Run it with "bash", never with "source" or "." :
+#      a source'd script runs inside YOUR terminal shell, so a single failure
+#      in it terminates the terminal itself. That is the exact mechanism behind
+#      "The terminal process /bin/bash terminated with exit code: 141".
+# USAGE_END
+#
 #  REQUIREMENTS: bash 4+, curl, gzip, awk, sort, md5sum, git.  No R needed here.
 # ==============================================================================
+
+# --- refuse to run inside the interactive shell (source / . script.sh) --------
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  printf 'FATAL: this script must be run as a command, not source'"'"'d.\n'
+  printf 'Use:  bash %s [--push] [--repo /path/to/repo]\n' "${BASH_SOURCE[0]}"
+  return 1 2>/dev/null || exit 1
+fi
+
 set -Eeuo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 TS="$(date +%Y%m%d_%H%M%S)"
 LOG="${HOME}/loy_restore_inputs_${TS}.log"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/loy_restore.XXXXXX")"
@@ -50,19 +83,29 @@ EXPECTED_CONDITIONS="Y_Scr Y_KO"
 
 DO_PUSH=0
 REPO_ARG=""
+DYING=0
 
-# --- output helper ------------------------------------------------------------
-mkdir -p "$(dirname "${LOG}")"
-exec > >(tee -a "${LOG}") 2>&1
+# --- logging: append to the log file directly, never through a pipe -----------
+: > "${LOG}" 2>/dev/null || true
+_emit() { printf '%s\n' "$1"; printf '%s\n' "$1" >> "${LOG}" 2>/dev/null || true; }
+log()  { _emit "[$(date +%H:%M:%S)] $*"; }
+note() { _emit "           $*"; }
+out()  { local __l; while IFS= read -r __l; do _emit "${__l}"; done; }
+hdr()  { _emit ""; _emit "=============================================================================="; _emit "  $*"; _emit "=============================================================================="; }
+die()  { DYING=1; _emit ""; _emit "[$(date +%H:%M:%S)] FATAL: $*"; _emit "Log kept at: ${LOG}"; exit 1; }
 
-log()  { printf '[%s] %s\n'          "$(date +%H:%M:%S)" "$*"; }
-note() { printf '           %s\n'    "$*"; }
-hdr()  { printf '\n%s\n  %s\n%s\n' "==============================================================================" "$*" "=============================================================================="; }
-die()  { printf '\n[%s] FATAL: %s\n' "$(date +%H:%M:%S)" "$*"; printf 'Log kept at: %s\n' "${LOG}"; exit 1; }
-
-usage() {
-  sed -n '2,40p' "$0"
+on_err() {
+  local rc=$?
+  [ "${DYING}" -eq 1 ] && return 0
+  _emit ""
+  _emit "[$(date +%H:%M:%S)] ERROR: a command exited with status ${rc} (line ${LINENO}): ${BASH_COMMAND}"
+  _emit "           the script stops here; nothing beyond this point was committed."
+  _emit "Log kept at: ${LOG}"
+  return 0
 }
+trap on_err ERR
+
+usage() { awk '/^# USAGE_BEGIN/{f=1;next} /^# USAGE_END/{f=0} f' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,7 +118,7 @@ while [ $# -gt 0 ]; do
 done
 
 hdr "LOY / GSE290114  -  INPUT RESTORATION  (script v${VERSION})"
-log "host=$HOSTNAME  shell=$BASH_VERSION  date=$(date -Iseconds)"
+log "host=${HOSTNAME}  shell=${BASH_VERSION}  date=$(date -Iseconds)"
 log "log file: ${LOG}"
 
 # ==============================================================================
@@ -84,7 +127,7 @@ log "log file: ${LOG}"
 hdr "STEP 0  locating the LOY repository"
 
 resolve_repo() {
-  local c hit g r
+  local c hit="" g r
   if [ -n "${REPO_ARG}" ]; then
     [ -d "${REPO_ARG}/.git" ] || die "--repo does not point to a git checkout: ${REPO_ARG}"
     printf '%s\n' "${REPO_ARG}"; return 0
@@ -93,11 +136,13 @@ resolve_repo() {
     [ -n "${c}" ] || continue
     if [ -d "${c}/.git" ]; then printf '%s\n' "${c}"; return 0; fi
   done
-  hit="$(find "${HOME}" -maxdepth 4 -type d -name .git 2>/dev/null | while IFS= read -r g; do
-           r="$(dirname -- "${g}")"
-           if git -C "${r}" remote -v 2>/dev/null | grep -q 'shayesteh68'; then printf '%s\n' "${r}"; break; fi
-         done | head -n 1)"
+  find "${HOME}" -maxdepth 4 -type d -name .git 2>/dev/null > "${TMP}/gitdirs.txt" || true
+  while IFS= read -r g; do
+    r="$(dirname -- "${g}")"
+    if git -C "${r}" remote -v 2>/dev/null | grep -q 'shayesteh68'; then hit="${r}"; break; fi
+  done < "${TMP}/gitdirs.txt"
   [ -n "${hit}" ] && printf '%s\n' "${hit}"
+  return 0
 }
 
 REPO="$(resolve_repo)"
@@ -151,7 +196,7 @@ fetch() {
   fi
   log "downloading $(basename "${dest}")"
   note "${url}"
-  curl -fL --retry 3 --retry-delay 3 --connect-timeout 20 --progress-bar -o "${dest}.part" "${url}" \
+  curl -fL --retry 3 --retry-delay 3 --connect-timeout 20 --no-progress-meter -o "${dest}.part" "${url}" \
     || die "download failed: ${url}"
   mv -f "${dest}.part" "${dest}"
   gzip -t "${dest}" 2>/dev/null || die "downloaded file is not a valid gzip: ${dest}"
@@ -161,9 +206,8 @@ fetch() {
 fetch "${COUNTS_URL}" "${COUNTS}"
 log "md5(${COUNTS#${REPO}/}) = $(md5sum "${COUNTS}" | cut -d' ' -f1)"
 
-# --- header / schema of the count matrix --------------------------------------
-gzip -dc "${COUNTS}" | head -n 1 > "${TMP}/counts_header.txt"
-HEADER="$(cat "${TMP}/counts_header.txt")"
+# --- header / schema of the count matrix (no early-exit reader: SIGPIPE-safe) --
+gzip -dc "${COUNTS}" | sed -n '1p' > "${TMP}/counts_header.txt"
 NCOL="$(awk -F'\t' '{print NF; exit}' "${TMP}/counts_header.txt")"
 log "count matrix: ${NCOL} columns in the header"
 
@@ -179,11 +223,6 @@ for c in ${REQUIRED_ANNOT_COLS}; do
   [ "${c}" = "gene_id" ] && GENE_ID_COL="${i}"
 done
 
-: > "${TMP}/sample_cols.txt"
-awk -F'\t' -v keep="$(printf '%s\t' ${REQUIRED_ANNOT_COLS})" '
-  {for(i=1;i<=NF;i++){ if(index(keep,"\t" $i "\t")==0 && (i==1 || $i!=prev_keep)) print $i }
-   exit}' "${TMP}/counts_header.txt" > "${TMP}/raw_cols.txt"
-# robust selection: print every header name that is not one of the required annotation names
 awk -F'\t' -v keep="$(printf '%s\t' ${REQUIRED_ANNOT_COLS})" '{
   for(i=1;i<=NF;i++){ k=1; n=split(keep,a,"\t"); for(j=1;j<=n;j++){ if($i==a[j]) k=0 } if(k==1) print $i }
 }' "${TMP}/counts_header.txt" > "${TMP}/sample_cols.txt"
@@ -191,7 +230,7 @@ awk -F'\t' -v keep="$(printf '%s\t' ${REQUIRED_ANNOT_COLS})" '{
 NSAMPLE_COLS="$(wc -l < "${TMP}/sample_cols.txt")"
 [ "${NSAMPLE_COLS}" -ge 1 ] || die "no sample columns detected in the count matrix header."
 log "sample columns detected in the count matrix: ${NSAMPLE_COLS}"
-sed 's/^/           - /' "${TMP}/sample_cols.txt"
+sed 's/^/           - /' "${TMP}/sample_cols.txt" | out
 
 DUPES="$(sort "${TMP}/sample_cols.txt" | uniq -d | paste -sd, - || true)"
 [ -z "${DUPES}" ] || die "duplicate sample column names in the count matrix header: ${DUPES}"
@@ -208,13 +247,12 @@ hdr "STEP 3  metadata/samplesheet.csv (missing input #2)"
 
 log "downloading the official series matrix"
 note "${MATRIX_URL}"
-curl -fL --retry 3 --retry-delay 3 --connect-timeout 20 -o "${TMP}/series_matrix.txt.gz" "${MATRIX_URL}" \
+curl -fL --retry 3 --retry-delay 3 --connect-timeout 20 --no-progress-meter -o "${TMP}/series_matrix.txt.gz" "${MATRIX_URL}" \
   || die "download failed: ${MATRIX_URL}"
 gzip -t "${TMP}/series_matrix.txt.gz" || die "series matrix is not a valid gzip file"
 gzip -dc "${TMP}/series_matrix.txt.gz" > "${TMP}/series_matrix.txt"
 [ -s "${TMP}/series_matrix.txt" ] || die "series matrix is empty"
 
-# >>> SERIES_AWK
 awk -F'\t' '
   function clean(v){ gsub(/^"|"$/,"",v); return v }
   $1=="!Sample_geo_accession"        { n=0; for(i=2;i<=NF;i++){ gsm[i-1]=clean($i); n++ } next }
@@ -225,14 +263,12 @@ awk -F'\t' '
     for(i=1;i<=n;i++) printf "%s\t%s\t%s\t%s\n", gsm[i], ttl[i], src[i], ch[i]
   }
 ' "${TMP}/series_matrix.txt" > "${TMP}/geo.tsv"
-# <<< SERIES_AWK
 
 NGEO="$(wc -l < "${TMP}/geo.tsv")"
 [ "${NGEO}" -ge 1 ] || die "the series matrix contained no !Sample_geo_accession rows."
 log "GEO samples in the series matrix: ${NGEO}"
 while IFS=$'\t' read -r g t s c; do note "${g} | title=${t} | source=${s} | ${c}"; done < "${TMP}/geo.tsv"
 
-# >>> MAP_COND
 map_condition() {
   local hay
   hay="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
@@ -244,7 +280,6 @@ map_condition() {
   fi
   printf 'UNKNOWN\n'
 }
-# <<< MAP_COND
 
 : > "${TMP}/map.tsv"
 if [ -s "${SHEET}" ]; then
@@ -267,24 +302,37 @@ else
     printf '%s\t%s\t%s\t%s\t%s\n' "${col}" "${cond}" "$(printf '%s' "${line}" | cut -f1)" "$(printf '%s' "${line}" | cut -f2-)" "${how}" >> "${TMP}/map.tsv"
   done < "${TMP}/sample_cols.txt"
 
-  csv_field() { case "$1" in *[,\"]*) printf '"%s"' "$(printf '%s' "$1" | sed 's/"/""/g')" ;; *) printf '%s' "$1" ;; esac }
+  csv_field() {
+    local v="$1"
+    case "${v}" in
+      *","*|*'"'*)
+        local w="${v//\"/\"\"}"
+        printf '"%s"' "${w}"
+        ;;
+      *)
+        printf '%s' "${v}"
+        ;;
+    esac
+  }
   {
     printf 'sample_id,condition\n'
-    while IFS=$'\t' read -r sid cond rest; do
+    while IFS="$(printf '\t')" read -r sid cond gsm rest how; do
       printf '%s,%s\n' "$(csv_field "${sid}")" "$(csv_field "${cond}")"
     done < "${TMP}/map.tsv"
   } > "${SHEET}"
   {
     printf 'sample_id\tcondition\tgsm\ttitle\tsource_name\tcharacteristics\tmatch\n'
-    while IFS=$'\t' read -r sid cond gsm rest how; do
+    while IFS="$(printf '\t')" read -r sid cond gsm rest how; do
       printf '%s\t%s\t%s\t%s\t%s\n' "${sid}" "${cond}" "${gsm}" "${rest}" "${how}"
     done < "${TMP}/map.tsv"
   } > "${REPO}/metadata/GEO_annotation_source.tsv"
   log "written: metadata/samplesheet.csv"
   log "written: metadata/GEO_annotation_source.tsv (provenance, not read by the pipeline)"
   log "condition mapping produced:"
-  while IFS=$'\t' read -r sid cond gsm rest how; do note "${sid}  ->  ${cond}   (${gsm}, ${how})"; done < "${TMP}/map.tsv"
-  cut -d',' -f1 "${SHEET}" | tail -n +2 | sed '/^$/d' | sed 's/^"//; s/"$//' > "${TMP}/sheet_ids.txt"
+  while IFS="$(printf '\t')" read -r sid cond gsm rest how; do
+    note "${sid}  ->  ${cond}   (${gsm}, ${how})"
+  done < "${TMP}/map.tsv"
+  cut -f1 "${TMP}/map.tsv" | grep -v '^[[:space:]]*$' > "${TMP}/sheet_ids.txt"
 fi
 
 # ==============================================================================
@@ -297,7 +345,7 @@ if [ -s "${REFS}" ]; then
 else
   log "absent - rebuilding from the official NCBI table (columns: Symbol, GeneID)"
   note "${GENEINFO_URL}"
-  curl -fL --retry 3 --retry-delay 3 --connect-timeout 20 -o "${TMP}/gene_info.gz" "${GENEINFO_URL}" \
+  curl -fL --retry 3 --retry-delay 3 --connect-timeout 20 --no-progress-meter -o "${TMP}/gene_info.gz" "${GENEINFO_URL}" \
     || die "download failed: ${GENEINFO_URL}"
   {
     printf 'Symbol\tGeneID\n'
@@ -312,16 +360,14 @@ fi
 hdr "STEP 5  validation"
 
 FAIL=0
-ok()   { printf '  [ OK ]   %s\n' "$*"; }
-warn() { printf '  [WARN]   %s\n' "$*"; }
-bad()  { printf '  [FAIL]   %s\n' "$*"; FAIL=$((FAIL+1)); }
+ok()   { _emit "  [ OK ]   $*"; }
+warn() { _emit "  [WARN]   $*"; }
+bad()  { _emit "  [FAIL]   $*"; FAIL=$((FAIL+1)); }
 
-# 5.1 columns of the count matrix
 for c in ${REQUIRED_ANNOT_COLS}; do
   [ -n "$(idx_of_col "${c}")" ] && ok "count matrix column present: ${c}" || bad "count matrix column missing: ${c}"
 done
 
-# 5.2 samplesheet schema and cross-check with the count matrix
 if [ -s "${SHEET}" ]; then
   ok "samplesheet exists: metadata/samplesheet.csv ($(($(wc -l < "${SHEET}")-1)) data rows)"
   shdr="$(head -n 1 "${SHEET}" | tr -d '\r' | tr -d '"')"
@@ -341,13 +387,12 @@ if [ -s "${SHEET}" ]; then
     ok "sample ids in the samplesheet are an exact set match with the count matrix columns (${NSAMPLE_COLS} samples)"
   else
     bad "samplesheet sample ids do not match the count matrix columns exactly:"
-    diff "${TMP}/a.txt" "${TMP}/b.txt" | sed 's/^/           /' || true
+    diff "${TMP}/a.txt" "${TMP}/b.txt" | sed 's/^/           /' | out || true
   fi
 else
   bad "metadata/samplesheet.csv is missing"
 fi
 
-# 5.3 the four pipeline scripts and the reference they consume
 for s in 01_deseq2_analysis.R 02_tf_enrichment.R 03_immune_deconvolution.R 04_pathway_analysis.R; do
   if [ -s "${REPO}/scripts/${s}" ]; then ok "script present: scripts/${s}"; else warn "script not found (name may differ): scripts/${s}"; fi
 done
@@ -358,13 +403,13 @@ if [ -s "${REFS}" ]; then
     || bad "entrez reference header must contain the columns Symbol and GeneID"
 fi
 
-# 5.4 new inputs vs. the results that were produced earlier
 DEG="${REPO}/results/deseq2_deg_significant.csv"
 if [ -s "${DEG}" ] && [ "${NENS}" -gt 0 ]; then
-  grep -oE 'ENSMUSG[0-9]+' "${DEG}" | sort -u | head -n 200 > "${TMP}/deg_ids.txt"
+  grep -oE 'ENSMUSG[0-9]+' "${DEG}" | sort -u > "${TMP}/deg_ids_all.txt" || true
+  sed -n '1,200p' "${TMP}/deg_ids_all.txt" > "${TMP}/deg_ids.txt"
   nprobe="$(wc -l < "${TMP}/deg_ids.txt")"
   if [ "${nprobe}" -gt 0 ]; then
-    gzip -dc "${COUNTS}" | cut -f"${GENE_ID_COL}" | grep -Fx -f "${TMP}/deg_ids.txt" | sort -u > "${TMP}/deg_found.txt"
+    gzip -dc "${COUNTS}" | cut -f"${GENE_ID_COL}" | grep -Fx -f "${TMP}/deg_ids.txt" | sort -u > "${TMP}/deg_found.txt" || true
     nfound="$(wc -l < "${TMP}/deg_found.txt")"
     if [ "${nfound}" -eq "${nprobe}" ]; then
       ok "independent cross-check: all ${nprobe} gene ids sampled from the existing results/deseq2_deg_significant.csv are present in the downloaded count matrix"
@@ -378,13 +423,12 @@ else
   warn "cross-check skipped (results file or gene ids unavailable)"
 fi
 
-# 5.5 results directory unchanged
 snap > "${TMP}/results_after.md5"
 if diff -q "${TMP}/results_before.md5" "${TMP}/results_after.md5" >/dev/null; then
   ok "results/ is byte-identical to the snapshot taken at the start of this run"
 else
   bad "results/ changed during this run - investigate immediately:"
-  diff "${TMP}/results_before.md5" "${TMP}/results_after.md5" | sed 's/^/           /' || true
+  diff "${TMP}/results_before.md5" "${TMP}/results_after.md5" | sed 's/^/           /' | out || true
 fi
 [ "${FAIL}" -eq 0 ] && ok "ALL INPUT CHECKS PASSED" || die "${FAIL} validation check(s) failed - see the [FAIL] lines above. Nothing was committed."
 
@@ -398,7 +442,7 @@ if [ -s "${REPO}/metadata/GEO_annotation_source.tsv" ]; then git add -f -- "meta
 if [ -s "${REFS}" ]; then git add -f -- "data/reference/mouse_gene2entrez.tsv" 2>/dev/null || true; fi
 
 log "staged files:"
-git diff --cached --name-only | sed 's/^/           /' || true
+git diff --cached --name-only | out || true
 
 if [ -n "$(git diff --cached --name-only)" ]; then
   git -c user.name="$(git config user.name || echo restore-tool)" \
@@ -423,13 +467,13 @@ fi
 # ==============================================================================
 hdr "STEP 7  R environment status for the pipeline scripts"
 if command -v Rscript >/dev/null 2>&1; then
-  log "Rscript on PATH: $(Rscript --version 2>&1 | head -n 1)"
+  log "Rscript on PATH: $(Rscript --version 2>&1 | sed -n '1p')"
 else
   warn "Rscript is NOT on PATH in this shell."
 fi
 if command -v conda >/dev/null 2>&1; then
   log "conda detected; environments whose name matches /r_/ :"
-  conda env list 2>/dev/null | awk '/(^r_|deseq)/{print "           " $0}' || true
+  conda env list 2>/dev/null | awk '/(^r_|deseq)/{print "           " $0}' | out || true
   note "if the pipeline environment exists, run:  conda activate r_deseq_env"
 else
   note "conda not on PATH in this shell."
@@ -437,7 +481,7 @@ fi
 for p in DESeq2 clusterProfiler pheatmap ggplot2 org.Mm.eg.db; do
   if command -v Rscript >/dev/null 2>&1; then
     v="$(Rscript -e "cat(if(requireNamespace('${p}',quietly=TRUE)) as.character(packageVersion('${p}')) else 'NOT-INSTALLED')" 2>/dev/null || echo 'check-failed')"
-    printf '           %-16s %s\n' "${p}" "${v}"
+    note "$(printf '%-16s %s' "${p}" "${v}")"
   fi
 done
 
