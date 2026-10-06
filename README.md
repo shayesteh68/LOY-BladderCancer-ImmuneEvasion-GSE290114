@@ -75,7 +75,7 @@ Raw sequencing data and the count matrix are not redistributed here; they are av
 - **Key Bioconductor packages:** `DESeq2` (differential expression), `clusterProfiler` and `org.Mm.eg.db` (KEGG enrichment with the mouse `mmu` annotation), `pheatmap` (heatmap rendering)
 - **Key CRAN packages:** `ggplot2` (PCA and volcano plots)
 
-The complete list of loaded packages is declared at the top of each script. No `environment.yml` or `sessionInfo()` snapshot is currently committed to this repository.
+The complete list of loaded packages is declared at the top of each script, and the conda environment is captured in `environment.yml`. A `sessionInfo()` snapshot is not currently committed to this repository.
 
 ## 🚀 Pipeline Execution
 

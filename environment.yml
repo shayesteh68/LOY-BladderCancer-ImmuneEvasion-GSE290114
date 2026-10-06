@@ -1,0 +1,11 @@
+name: loy-rnaseq
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base>=4.3.0
+  - bioconductor-deseq2
+  - bioconductor-clusterprofiler
+  - bioconductor-org.mm.eg.db
+  - r-pheatmap
+  - r-ggplot2
