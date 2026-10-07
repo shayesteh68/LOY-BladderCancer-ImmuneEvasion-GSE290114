@@ -1,0 +1,9 @@
+[1/4] Loading raw counts, metadata, and DEG results...
+[2/4] Normalizing counts with DESeq2...
+Warning message:
+In DESeqDataSet(se, design = design, ignoreRank) :
+  some variables in design formula are characters, converting to factors
+[3/4] Plotting heatmap for 6 target genes...
+null device 
+          1 
+[4/4] Heatmap saved to results/figures/key_genes_heatmap.png

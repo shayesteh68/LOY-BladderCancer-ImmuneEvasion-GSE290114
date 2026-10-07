@@ -1,0 +1,18 @@
+[1/5] Loading raw count data and sample metadata...
+[2/5] Constructing DESeq2 dataset and pre-filtering...
+Retained 16684 genes after filtering low counts.
+[3/5] Performing Variance Stabilizing Transformation (VST) & PCA...
+using ntop=500 top features by variance
+[4/5] Running DESeq2 differential analysis...
+estimating size factors
+estimating dispersions
+gene-wise dispersion estimates
+mean-dispersion relationship
+final dispersion estimates
+fitting model and testing
+Significant DEGs (padj < 0.05, |log2FC| >= 1.0): Total = 765 (Up in Y-KO: 181, Down in Y-KO: 584)
+[5/5] Generating Volcano Plot...
+Warning message:
+Removed 1943 rows containing missing values or values outside the scale range
+(`geom_point()`). 
+Done! Figures saved in results/figures/ and tables in results/tables/
