@@ -32,7 +32,7 @@ The pipeline is organised as four sequential analyses:
 ## 🗂️ Repository Structure
 
 ```text
-LOY-BladderCancer-ImmuneEvasion-GSE290114/
+LOY-BladderCancer-ImmuneEvasion-GSE290114
 ├── README.md
 ├── RESTORE_INPUTS_v1.0.1_NOTES.txt
 ├── environment.yml
@@ -48,10 +48,10 @@ LOY-BladderCancer-ImmuneEvasion-GSE290114/
 │   ├── GEO_annotation_source.tsv
 │   └── samplesheet.csv
 ├── scripts/
-│   ├── 01_deseq2_analysis.R
-│   ├── 02_pathway_enrichment.R
-│   ├── 03_plot_heatmap.R
-│   └── 04_tf_enrichment.R
+│   ├── 01_deseq2_analysis.R        # DESeq2: QC, VST/PCA, differential expression
+│   ├── 02_pathway_enrichment.R     # KEGG pathway enrichment of DEG sets
+│   ├── 03_plot_heatmap.R           # Targeted heatmap (Y-chromosome + immune genes)
+│   └── 04_tf_enrichment.R          # TRRUST v2 transcription factor enrichment
 └── results/
     ├── tables/
     │   ├── deseq2_deg_all.csv
@@ -64,8 +64,11 @@ LOY-BladderCancer-ImmuneEvasion-GSE290114/
     │   ├── key_genes_heatmap.png
     │   ├── kegg_enrichment_downregulated.png
     │   └── tf_enrichment_downregulated.png
-    └── logs/
-        ├── log files are written here at each run
+    └── logs/                      # one timestamped log file per script per run
+        ├── 20261007_105115_01_deseq2_analysis.log
+        ├── 20261007_105115_02_pathway_enrichment.log
+        ├── 20261007_105115_03_plot_heatmap.log
+        └── 20261007_105115_04_tf_enrichment.log
 ```
 
 ## 📥 Input Files
