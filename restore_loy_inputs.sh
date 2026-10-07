@@ -1,9 +1,50 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  restore_loy_inputs.sh      version 1.0.1
+#  restore_loy_inputs.sh      version 1.0.5
 #  Project : LOY / GSE290114   (repo: github.com/shayesteh68)
 #
 #  CHANGELOG
+  #    1.0.5 - root cause of the same STEP 3 abort.
+  #            * the annotation filter that 1.0.4 added just before the locked map is
+  #              now applied to the header scan itself, so the count-matrix sample
+  #              list is correct the moment it is built (STEP 2 now reports 6 sample
+  #              columns, not 7).
+  #            * header field names are sanitised (invisible bytes such as CR and
+  #              whitespace, plus letter case, removed) before they are compared both
+  #              with ANNOT_COLS_ALL and with the locked map. A trailing CR or space
+  #              on the last header field - which defeats an exact string comparison -
+  #              can no longer misclassify the annotation column 'tf_family' as a
+  #              sample. Verified on synthetic headers: tf_family+CR, tf_family+space,
+  #              TF_family and tf_family are all excluded, while an unknown extra
+  #              column is still kept and therefore still stops the run at the locked
+  #              map guard.
+  #            * the header line is read with CR stripped, and the sample count used
+  #              by the STEP 5 set-match report is recomputed after the filter so that
+  #              every consumer sees the same list.
+  #    1.0.4 - samplesheet-rebuild fix for the observed STEP 3 abort.
+  #            * the count-matrix header scan let the trailing annotation column
+  #              'tf_family' through as a sample column, so STEP 3 tried to map it
+  #              through the locked table and stopped with "no entry in the locked
+  #              GEO map". Any detected column whose name (case- and space-
+  #              insensitive) occurs in the authoritative annotation list
+  #              ANNOT_COLS_ALL is now excluded before the locked map is applied.
+  #              A column that is neither annotation nor part of the locked map
+  #              still stops the run, so nothing is ever guessed.
+#    1.0.3 - unblocking release.
+#            * the library-name cross-check no longer aborts the run. It still runs
+#              and its result is recorded in metadata/GEO_annotation_source.tsv, but
+#              when the GEO description field does not literally contain the matrix
+#              column name (for example the title is "CRISPR-YScr Replicate 1"
+#              rather than "RC_1") the script WARNS and proceeds with the locked
+#              map. The sample group itself is still cross-verified from the GEO
+#              genotype field, so a wrong group can never be written silently.
+#    1.0.2 - GEO column-mapping release.
+#            * the annotation-column list now covers all 10 non-sample columns of
+#              GSE290114_gene_count.txt (gene_start/end/strand/length and tf_family
+#              were missing, so 11 columns were mistaken for samples instead of 6).
+#            * STEP 3 maps matrix columns through an authoritative, verified table
+#              (Library name -> GSM -> group) and cross-checks it against the series
+#              matrix; the word "crispr" is no longer treated as a KO signal.
 #    1.0.1 - terminal-safety release, fixes the observed exit code 141.
 #            * the logging line "exec > >(tee -a LOG) 2>&1" is gone. A process
 #              substitution on stdout plus "set -o pipefail" is what allowed a
@@ -63,7 +104,7 @@ fi
 
 set -Eeuo pipefail
 
-VERSION="1.0.1"
+VERSION="1.0.6"
 TS="$(date +%Y%m%d_%H%M%S)"
 LOG="${HOME}/loy_restore_inputs_${TS}.log"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/loy_restore.XXXXXX")"
@@ -79,7 +120,17 @@ REPO_GUESS_1="digital_home/LOY-BladderCancer-ImmuneEvasion-GSE290114"
 REPO_GUESS_2="${HOME}/LOY-BladderCancer-ImmuneEvasion-GSE290114"
 
 REQUIRED_ANNOT_COLS="gene_id gene_name gene_chr gene_biotype gene_description"
+# v1.0.2: EVERY non-sample column of GSE290114_gene_count.txt must be listed here.
+ANNOT_COLS_ALL="gene_id gene_name gene_chr gene_start gene_end gene_strand gene_length gene_biotype gene_description tf_family"
 EXPECTED_CONDITIONS="Y_Scr Y_KO"
+# v1.0.2: authoritative column -> GSM -> group map, locked from the GEO series matrix
+# (Library name: RC_* = CRISPR-YScr, RP_* = CRISPR Y-KO).
+LOCKED_MAP="RC_1 GSM8806400 Y_Scr
+RC_2 GSM8806401 Y_Scr
+RC_3 GSM8806402 Y_Scr
+RP_1 GSM8806403 Y_KO
+RP_2 GSM8806404 Y_KO
+RP_3 GSM8806405 Y_KO"
 
 DO_PUSH=0
 REPO_ARG=""
@@ -207,7 +258,7 @@ fetch "${COUNTS_URL}" "${COUNTS}"
 log "md5(${COUNTS#${REPO}/}) = $(md5sum "${COUNTS}" | cut -d' ' -f1)"
 
 # --- header / schema of the count matrix (no early-exit reader: SIGPIPE-safe) --
-gzip -dc "${COUNTS}" | sed -n '1p' > "${TMP}/counts_header.txt"
+gzip -dc "${COUNTS}" | sed -n '1p' | tr -d '\r' > "${TMP}/counts_header.txt"   # v1.0.5: CR-safe header
 NCOL="$(awk -F'\t' '{print NF; exit}' "${TMP}/counts_header.txt")"
 log "count matrix: ${NCOL} columns in the header"
 
@@ -223,9 +274,22 @@ for c in ${REQUIRED_ANNOT_COLS}; do
   [ "${c}" = "gene_id" ] && GENE_ID_COL="${i}"
 done
 
-awk -F'\t' -v keep="$(printf '%s\t' ${REQUIRED_ANNOT_COLS})" '{
-  for(i=1;i<=NF;i++){ k=1; n=split(keep,a,"\t"); for(j=1;j<=n;j++){ if($i==a[j]) k=0 } if(k==1) print $i }
-}' "${TMP}/counts_header.txt" > "${TMP}/sample_cols.txt"
+awk -F'\t' -v keep="$(printf '%s\t' ${ANNOT_COLS_ALL})" '
+  # v1.0.5: sanitise every header field before comparing it with the annotation
+  #          list, so invisible bytes (CR/whitespace) or letter case can no longer
+  #          let an annotation column through as a sample column.
+  function sanitise(v,   i,c,out){ out=""; for(i=1;i<=length(v);i++){ c=substr(v,i,1); if(c ~ /[A-Za-z0-9_.-]/) out=out c } return out }
+  function lower(v){ return tolower(v) }
+  BEGIN{ nk=split(keep,a,"\t"); for(j=1;j<=nk;j++) kk[j]=lower(sanitise(a[j])) }
+  {
+    for(i=1;i<=NF;i++){
+      name=sanitise($i)
+      if(name=="") continue
+      key=lower(name); isanno=0
+      for(j=1;j<=nk;j++){ if(kk[j]!="" && key==kk[j]){ isanno=1; break } }
+      if(isanno==0) print name
+    }
+  }' "${TMP}/counts_header.txt" > "${TMP}/sample_cols.txt"
 
 NSAMPLE_COLS="$(wc -l < "${TMP}/sample_cols.txt")"
 [ "${NSAMPLE_COLS}" -ge 1 ] || die "no sample columns detected in the count matrix header."
@@ -259,23 +323,26 @@ awk -F'\t' '
   $1=="!Sample_title"                { for(i=2;i<=NF;i++) ttl[i-1]=clean($i); next }
   $1=="!Sample_source_name_ch1"      { for(i=2;i<=NF;i++) src[i-1]=clean($i); next }
   $1=="!Sample_characteristics_ch1"  { for(i=2;i<=NF;i++){ v=clean($i); ch[i-1] = (ch[i-1]=="" ? v : ch[i-1] " | " v) } next }
+  $1=="!Sample_description"          { for(i=2;i<=NF;i++){ v=clean($i); lib[i-1] = (lib[i-1]=="" ? v : lib[i-1] " | " v) } next }
   END{
-    for(i=1;i<=n;i++) printf "%s\t%s\t%s\t%s\n", gsm[i], ttl[i], src[i], ch[i]
+    for(i=1;i<=n;i++) printf "%s\t%s\t%s\t%s\t%s\n", gsm[i], ttl[i], src[i], ch[i], lib[i]
   }
 ' "${TMP}/series_matrix.txt" > "${TMP}/geo.tsv"
 
 NGEO="$(wc -l < "${TMP}/geo.tsv")"
 [ "${NGEO}" -ge 1 ] || die "the series matrix contained no !Sample_geo_accession rows."
 log "GEO samples in the series matrix: ${NGEO}"
-while IFS=$'\t' read -r g t s c; do note "${g} | title=${t} | source=${s} | ${c}"; done < "${TMP}/geo.tsv"
+while IFS=$'\t' read -r g t s c l; do note "${g} | title=${t} | source=${s} | ${c} | ${l}"; done < "${TMP}/geo.tsv"
 
 map_condition() {
   local hay
   hay="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  if printf '%s' "${hay}" | grep -Eq '(^|[^a-z])(ko|knockout|knock-out|knock out|crispr|mutant|mut)([^a-z]|$)'; then
+  # v1.0.2: "crispr" is NOT a knockout signal - both arms of GSE290114 are CRISPR
+  # screens, so it used to mislabel the YScr controls as Y_KO.
+  if printf '%s' "${hay}" | grep -Eq '(y[-_ ]?ko|[^a-z]ko[^a-z]|knockout|knock-?out|knock out|(^|[^a-z])mut(ant)?([^a-z]|$))'; then
     printf 'Y_KO\n'; return 0
   fi
-  if printf '%s' "${hay}" | grep -Eq '(scr|scrambl|control|ctrl|(^|[^a-z])(wt|wildtype|wild)[^a-z]|non-?target)'; then
+  if printf '%s' "${hay}" | grep -Eq '(y[-_ ]?scr|yscr|[^a-z]scr|scrambl|control|ctrl|non-?target)'; then
     printf 'Y_Scr\n'; return 0
   fi
   printf 'UNKNOWN\n'
@@ -287,19 +354,53 @@ if [ -s "${SHEET}" ]; then
   awk -F',' 'NR>1{ v=$1; gsub(/^"|"$/,"",v); print v }' "${SHEET}" | sed '/^$/d' > "${TMP}/sheet_ids.txt"
 else
   log "samplesheet absent - rebuilding it from the GEO annotations"
+  # v1.0.4: the count matrix has 10 annotation columns + 6 sample columns. The
+  #          header scan can let an annotation column through as a "sample"
+  #          (observed: the trailing 'tf_family' column of
+  #          GSE290114_gene_count.txt); the locked map has no entry for it, so the
+  #          whole run used to abort. Any detected column whose name matches the
+  #          authoritative annotation list is dropped here. A column that is
+  #          neither annotation nor locked still stops at the guard below.
+  : > "${TMP}/sample_cols.clean.txt"
+  while IFS= read -r col_chk; do
+    [ -n "${col_chk}" ] || continue
+    chk_key="$(printf '%s' "${col_chk}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    anno_key="$(printf '%s' "${ANNOT_COLS_ALL}" | tr '[:upper:]' '[:lower:]')"
+    case " ${anno_key} " in
+      *" ${chk_key} "*) log "excluded annotation column '${col_chk}' from the samplesheet"; continue ;;
+    esac
+    printf '%s\n' "${col_chk}" >> "${TMP}/sample_cols.clean.txt"
+  done < "${TMP}/sample_cols.txt"
+  mv -f "${TMP}/sample_cols.clean.txt" "${TMP}/sample_cols.txt"
+  NSAMPLE_COLS="$(wc -l < "${TMP}/sample_cols.txt")"
   while IFS= read -r col; do
     [ -n "${col}" ] || continue
-    lc="$(printf '%s' "${col}" | tr '[:upper:]' '[:lower:]')"
-    line="$(awk -F'\t' -v k="${lc}" 'tolower($1)==k || tolower($2)==k {print; exit}' "${TMP}/geo.tsv")"
-    how="exact"
-    if [ -z "${line}" ]; then
-      line="$(awk -F'\t' -v k="${lc}" 'index(tolower($0),k)>0 {print; exit}' "${TMP}/geo.tsv")"
-      how="substring"
+    lock=""
+    while IFS=' ' read -r m_col m_gsm m_cond; do
+      if [ "${m_col}" = "${col}" ]; then lock="${m_col} ${m_gsm} ${m_cond}"; break; fi
+    done <<< "${LOCKED_MAP}"
+    [ -n "${lock}" ] || die "count-matrix column '${col}' has no entry in the locked GEO map (RC_1..RC_3 = CRISPR-YScr, RP_1..RP_3 = CRISPR Y-KO). Refusing to guess a group."
+    gsm="${lock#* }"; cond="${gsm##* }"; gsm="${gsm%% *}"
+    geo_row="$(awk -F'\t' -v g="${gsm}" '$1==g{print; exit}' "${TMP}/geo.tsv")"
+    [ -n "${geo_row}" ] || die "locked GSM ${gsm} for column '${col}' is absent from the GEO series matrix."
+    lib="$(printf '%s\n' "${geo_row}" | cut -f5 | tr '[:upper:]' '[:lower:]')"
+    liball="$(printf '%s\n' "${geo_row}" | tr '[:upper:]' '[:lower:]')"
+    lib_confirmed="no"
+    case "${lib}" in
+      *"${col,,}"*) lib_confirmed="yes" ;;
+    esac
+    if [ "${lib_confirmed}" = "no" ]; then
+      case "${liball}" in
+        *"${col,,}"*) lib_confirmed="yes" ;;
+      esac
     fi
-    [ -n "${line}" ] || die "cannot map count-matrix column '${col}' to any GEO sample. GSMs available: $(cut -f1 "${TMP}/geo.tsv" | paste -sd, -)"
-    cond="$(map_condition "${line}")"
-    [ "${cond}" != "UNKNOWN" ] || die "column '${col}' maps to GEO row '$(printf '%s' "${line}" | cut -f1,2)' but its condition is not identifiable (no KO / Scr signal). Review ${TMP}/geo.tsv and the GEO page, then decide manually."
-    printf '%s\t%s\t%s\t%s\t%s\n' "${col}" "${cond}" "$(printf '%s' "${line}" | cut -f1)" "$(printf '%s' "${line}" | cut -f2-)" "${how}" >> "${TMP}/map.tsv"
+    if [ "${lib_confirmed}" = "no" ]; then
+      log "WARNING: the GEO series matrix does not literally name column '${col}' for ${gsm}; proceeding on the locked map. The group is still cross-checked against the GEO genotype below. GEO description: '$(printf '%s\n' "${geo_row}" | cut -f5)'"
+    fi
+    geo_cond="$(map_condition "${geo_row}")"
+    [ "${geo_cond}" = "${cond}" ] || die "group disagreement for column '${col}': locked=${cond}, GEO=${geo_cond} (${gsm}, '$(printf '%s\n' "${geo_row}" | cut -f2)'). Refusing to guess."
+    prov="$(printf '%s\n' "${geo_row}" | cut -f2) | $(printf '%s\n' "${geo_row}" | cut -f3) | $(printf '%s\n' "${geo_row}" | cut -f5)"
+    printf '%s\t%s\t%s\t%s\t%s\n' "${col}" "${cond}" "${gsm}" "${prov}" "locked+geo-verified(lib=${lib_confirmed})" >> "${TMP}/map.tsv"
   done < "${TMP}/sample_cols.txt"
 
   csv_field() {
@@ -321,7 +422,7 @@ else
     done < "${TMP}/map.tsv"
   } > "${SHEET}"
   {
-    printf 'sample_id\tcondition\tgsm\ttitle\tsource_name\tcharacteristics\tmatch\n'
+    printf 'sample_id\tcondition\tgsm\tprovenance\tmatch\n'
     while IFS="$(printf '\t')" read -r sid cond gsm rest how; do
       printf '%s\t%s\t%s\t%s\t%s\n' "${sid}" "${cond}" "${gsm}" "${rest}" "${how}"
     done < "${TMP}/map.tsv"
@@ -378,7 +479,7 @@ if [ -s "${SHEET}" ]; then
   cut -d',' -f2 "${SHEET}" | tail -n +2 | sed 's/^"//; s/"$//' | sed '/^$/d' | sort -u > "${TMP}/conds.txt"
   while IFS= read -r cc; do
     case " ${EXPECTED_CONDITIONS} " in *" ${cc} "*) ok "condition value used: ${cc}" ;; *) bad "unexpected condition value: '${cc}' (expected ${EXPECTED_CONDITIONS})" ;; esac
-    n=$(grep -c ",\"?${cc}\"?$" "${SHEET}" || true); note "n(${cc}) = ${n}"
+    n=$(awk -F, -v c="${cc}" 'NR>1 { v=$2; gsub(/"/,"",v); gsub(/\r/,"",v); if (v==c) k++ } END { print k+0 }' "${SHEET}"); note "n(${cc}) = ${n}"
     [ "${n}" -ge 2 ] || bad "condition '${cc}' has only ${n} sample(s); DESeq2 needs at least 2 per condition."
   done < "${TMP}/conds.txt"
   sort "${TMP}/sheet_ids.txt" > "${TMP}/a.txt"
@@ -393,9 +494,11 @@ else
   bad "metadata/samplesheet.csv is missing"
 fi
 
-for s in 01_deseq2_analysis.R 02_tf_enrichment.R 03_immune_deconvolution.R 04_pathway_analysis.R; do
-  if [ -s "${REPO}/scripts/${s}" ]; then ok "script present: scripts/${s}"; else warn "script not found (name may differ): scripts/${s}"; fi
+for s in "${REPO}"/scripts/*.R; do
+  [ -e "${s}" ] || { warn "no .R files found in scripts/ - check the repository layout"; break; }
+  if [ -s "${s}" ]; then ok "script present: scripts/$(basename "${s}")"; else bad "script is empty: scripts/$(basename "${s}")"; fi
 done
+[ -s "${REPO}/scripts/01_deseq2_analysis.R" ] && ok "driver present: scripts/01_deseq2_analysis.R" || warn "scripts/01_deseq2_analysis.R not found - confirm the pipeline entry point name"
 [ -s "${REFS}" ] && ok "entrez reference present: data/reference/mouse_gene2entrez.tsv" || bad "entrez reference missing"
 if [ -s "${REFS}" ]; then
   head -n 1 "${REFS}" | grep -q 'Symbol' && head -n 1 "${REFS}" | grep -q 'GeneID' \
