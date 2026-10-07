@@ -1,0 +1,7 @@
+sample_id	condition	gsm	provenance	match
+RC_1	Y_Scr	GSM8806400	CRISPR-YScr Replicate 1 | MB49 Tumor | Library name: RC_1 | CRISPR-YScr replicate 1	locked+geo-verified(lib=yes)
+RC_2	Y_Scr	GSM8806401	CRISPR-YScr Replicate 2 | MB49 Tumor | Library name: RC_2 | CRISPR-YScr replicate 2	locked+geo-verified(lib=yes)
+RC_3	Y_Scr	GSM8806402	CRISPR-YScr Replicate 3 | MB49 Tumor | Library name: RC_3 | CRISPR-YScr replicate 3	locked+geo-verified(lib=yes)
+RP_1	Y_KO	GSM8806403	CRISPR Y-KO Replicate 1 | MB49 Tumor | Library name: RP_1 | CRISPR Y-KO replicate 1	locked+geo-verified(lib=yes)
+RP_2	Y_KO	GSM8806404	CRISPR Y-KO Replicate 2 | MB49 Tumor | Library name: RP_2 | CRISPR Y-KO replicate 2	locked+geo-verified(lib=yes)
+RP_3	Y_KO	GSM8806405	CRISPR Y-KO Replicate 3 | MB49 Tumor | Library name: RP_3 | CRISPR Y-KO replicate 3	locked+geo-verified(lib=yes)
