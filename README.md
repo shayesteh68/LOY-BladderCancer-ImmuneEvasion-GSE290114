@@ -34,40 +34,54 @@ The pipeline is organised as four sequential analyses:
 ```text
 LOY-BladderCancer-ImmuneEvasion-GSE290114/
 ├── README.md
+├── RESTORE_INPUTS_v1.0.1_NOTES.txt
+├── environment.yml
+├── restore_loy_inputs.sh
 ├── data/
-│   └── annotation/
-│       └── trrust_rawdata.mouse.tsv
+│   ├── annotation/
+│   │   └── trrust_rawdata.mouse.tsv
+│   ├── raw/
+│   │   └── GSE290114_gene_count.txt.gz
+│   └── reference/
+│       └── mouse_gene2entrez.tsv
+├── metadata/
+│   ├── GEO_annotation_source.tsv
+│   └── samplesheet.csv
 ├── scripts/
-│   ├── 01_deseq2_analysis.R        # DESeq2: QC, VST/PCA, differential expression
-│   ├── 02_pathway_enrichment.R     # KEGG pathway enrichment of DEG sets
-│   ├── 03_plot_heatmap.R           # Targeted heatmap (Y-chromosome + immune genes)
-│   └── 04_tf_enrichment.R          # TRRUST v2 transcription factor enrichment
+│   ├── 01_deseq2_analysis.R
+│   ├── 02_pathway_enrichment.R
+│   ├── 03_plot_heatmap.R
+│   └── 04_tf_enrichment.R
 └── results/
     ├── tables/
     │   ├── deseq2_deg_all.csv
     │   ├── deseq2_deg_significant.csv
     │   ├── kegg_enrichment_downregulated.csv
     │   └── trrust_tf_enrichment_downregulated.csv
-    └── figures/
-        ├── pca_plot.png
-        ├── volcano_plot.png
-        ├── key_genes_heatmap.png
-        ├── kegg_enrichment_downregulated.png
-        └── tf_enrichment_downregulated.png
+    ├── figures/
+    │   ├── pca_plot.png
+    │   ├── volcano_plot.png
+    │   ├── key_genes_heatmap.png
+    │   ├── kegg_enrichment_downregulated.png
+    │   └── tf_enrichment_downregulated.png
+    └── logs/
+        ├── log files are written here at each run
 ```
 
-## 📥 Required Input Files (not included in this repository)
+## 📥 Input Files
 
-The scripts read their inputs from paths that are deliberately kept outside version control. Before running the pipeline, place the following files in the expected locations:
+The raw count matrix, sample sheet and annotation files required by the pipeline are
+versioned in this repository (see `data/` and `metadata/`), so a fresh clone is enough
+to re-run the analysis; `restore_loy_inputs.sh` can additionally restore and md5-verify them.
 
-| Expected path | Description |
+| Path | Description |
 | --- | --- |
-| `data/raw/GSE290114_gene_count.txt.gz` | Raw gene-level count matrix for GSE290114 (download from GEO). |
-| `metadata/samplesheet.csv` | Sample sheet with the columns `sample_id` and `condition`; the `condition` column must contain the levels `Y_Scr` and `Y_KO`. |
+| `data/raw/GSE290114_gene_count.txt.gz` | Raw gene-level count matrix for GSE290114 (source: GEO). |
+| `metadata/samplesheet.csv` | Sample sheet with the columns `sample_id` and `condition`; the `condition` column contains the levels `Y_Scr` and `Y_KO`. |
 | `data/reference/mouse_gene2entrez.tsv` | Mouse gene symbol to Entrez ID mapping used for KEGG enrichment. |
-| `data/annotation/trrust_rawdata.mouse.tsv` | TRRUST v2 mouse regulatory interactions (already included in this repository). |
+| `data/annotation/trrust_rawdata.mouse.tsv` | TRRUST v2 mouse regulatory interactions. |
 
-Raw sequencing data and the count matrix are not redistributed here; they are available from the GEO accession above.
+The original raw sequencing data remain available from the GEO accession above.
 
 ## ⚙️ Environment & Dependencies
 
@@ -119,7 +133,7 @@ All scripts assume they are launched from the repository root directory and writ
 ## ⚠️ Scope and Limitations
 
 - Enrichment results are reported for the **down-regulated** gene set only. Up-regulated KEGG enrichment outputs (the corresponding table and figure) are **not** part of this repository in its current state.
-- The raw count matrix and the sample sheet are not versioned here and must be obtained from GEO (see *Required Input Files*).
+- The count matrix, sample sheet and annotation files are tracked in this repository; the original raw sequencing data remain available from GEO (see *Input Files*).
 - This repository focuses on bulk RNA-seq differential expression, pathway and transcription-factor enrichment; no single-cell or deconvolution analysis is included.
 
 ## 👤 Author & Contact
