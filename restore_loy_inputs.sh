@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  restore_loy_inputs.sh      version 1.0.5
+#  restore_loy_inputs.sh      version 1.0.8
 #  Project : LOY / GSE290114   (repo: github.com/shayesteh68)
 #
 #  CHANGELOG
+#    1.0.8 - audit safety and documentation update.
+#            * STEP 6 is read-only; the script never stages, commits, or pushes.
+#            * error and usage messages no longer imply that Git changes are made.
   #    1.0.5 - root cause of the same STEP 3 abort.
   #            * the annotation filter that 1.0.4 added just before the locked map is
   #              now applied to the header scan itself, so the count-matrix sample
@@ -76,14 +79,13 @@
 #    6. validates EVERY input the scripts in scripts/ require, cross-checks the
 #       new files against the existing results/, and
 #       re-checks the results/ md5 snapshot (must be unchanged),
-#    7. commits ONLY the restored input files, and pushes if --push is given.
+#    7. reports git status; it does not stage, commit, or push anything.
 #
 #  It never overwrites or recomputes anything inside results/.
 #  It stops with a FATAL message instead of guessing when a mapping is unclear.
 #
 # USAGE_BEGIN
-#    bash restore_loy_inputs.sh            # restore + validate + commit locally
-#    bash restore_loy_inputs.sh --push     # same, and push to origin afterwards
+#    bash restore_loy_inputs.sh            # restore + validate; no git mutations
 #    bash restore_loy_inputs.sh --repo /full/path/to/repo   # only if auto-detect fails
 #
 #    Run it with "bash", never with "source" or "." :
@@ -98,13 +100,13 @@
 # --- refuse to run inside the interactive shell (source / . script.sh) --------
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then
   printf 'FATAL: this script must be run as a command, not source'"'"'d.\n'
-  printf 'Use:  bash %s [--push] [--repo /path/to/repo]\n' "${BASH_SOURCE[0]}"
+  printf 'Use:  bash %s [--repo /path/to/repo]\n' "${BASH_SOURCE[0]}"
   return 1 2>/dev/null || exit 1
 fi
 
 set -Eeuo pipefail
 
-VERSION="1.0.6"
+VERSION="1.0.8"
 TS="$(date +%Y%m%d_%H%M%S)"
 LOG="${HOME}/loy_restore_inputs_${TS}.log"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/loy_restore.XXXXXX")"
@@ -132,7 +134,6 @@ RP_1 GSM8806403 Y_KO
 RP_2 GSM8806404 Y_KO
 RP_3 GSM8806405 Y_KO"
 
-DO_PUSH=0
 REPO_ARG=""
 DYING=0
 
@@ -150,7 +151,7 @@ on_err() {
   [ "${DYING}" -eq 1 ] && return 0
   _emit ""
   _emit "[$(date +%H:%M:%S)] ERROR: a command exited with status ${rc} (line ${LINENO}): ${BASH_COMMAND}"
-  _emit "           the script stops here; nothing beyond this point was committed."
+  _emit "           the script stops here; no git commit or push is performed by this script."
   _emit "Log kept at: ${LOG}"
   return 0
 }
@@ -160,7 +161,6 @@ usage() { awk '/^# USAGE_BEGIN/{f=1;next} /^# USAGE_END/{f=0} f' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --push) DO_PUSH=1 ;;
     --repo) shift; REPO_ARG="${1:-}" ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
@@ -533,40 +533,16 @@ else
   bad "results/ changed during this run - investigate immediately:"
   diff "${TMP}/results_before.md5" "${TMP}/results_after.md5" | sed 's/^/           /' | out || true
 fi
-[ "${FAIL}" -eq 0 ] && ok "ALL INPUT CHECKS PASSED" || die "${FAIL} validation check(s) failed - see the [FAIL] lines above. Nothing was committed."
+[ "${FAIL}" -eq 0 ] && ok "ALL INPUT CHECKS PASSED" || die "${FAIL} validation check(s) failed - see the [FAIL] lines above. No files were staged, committed, or pushed."
 
 # ==============================================================================
-# STEP 6 - commit the restored inputs (results/ untouched)
+# STEP 6 - report restored files without changing git state
 # ==============================================================================
-hdr "STEP 6  commit"
+hdr "STEP 6  git status (read-only)"
+git status --short | out || true
+note "No files are staged, committed, or pushed by this script."
 
-git add -f -- "data/raw/$(basename "${COUNTS}")" "metadata/samplesheet.csv" 2>/dev/null || true
-if [ -s "${REPO}/metadata/GEO_annotation_source.tsv" ]; then git add -f -- "metadata/GEO_annotation_source.tsv" 2>/dev/null || true; fi
-if [ -s "${REFS}" ]; then git add -f -- "data/reference/mouse_gene2entrez.tsv" 2>/dev/null || true; fi
-
-log "staged files:"
-git diff --cached --name-only | out || true
-
-if [ -n "$(git diff --cached --name-only)" ]; then
-  git -c user.name="$(git config user.name || echo restore-tool)" \
-      -c user.email="$(git config user.email || echo restore-tool@localhost)" \
-      commit -m "inputs: restore GSE290114 raw counts matrix, samplesheet and Entrez map (NCBI-verified sources, all input checks passed)" \
-    || die "git commit failed"
-  log "commit created: $(git rev-parse --short HEAD)"
-else
-  log "nothing new to commit (files already tracked and unchanged)"
-fi
-
-if [ "${DO_PUSH}" -eq 1 ]; then
-  log "pushing to origin"
-  git push || die "git push failed - resolve it and re-run with --push"
-  ok "pushed: $(git rev-parse --abbrev-ref HEAD) -> origin"
-else
-  note "push not requested. To publish: cd \"${REPO}\" && git push"
-fi
-
-# ==============================================================================
-# STEP 7 - R environment status (informational; nothing here needs R)
+# ==============================================================================# STEP 7 - R environment status (informational; nothing here needs R)
 # ==============================================================================
 hdr "STEP 7  R environment status for the pipeline scripts"
 if command -v Rscript >/dev/null 2>&1; then
@@ -577,7 +553,7 @@ fi
 if command -v conda >/dev/null 2>&1; then
   log "conda detected; environments whose name matches /r_/ :"
   conda env list 2>/dev/null | awk '/(^r_|deseq)/{print "           " $0}' | out || true
-  note "if the pipeline environment exists, run:  conda activate r_deseq_env"
+  note "if the pipeline environment exists, run:  conda activate loy-rnaseq"
 else
   note "conda not on PATH in this shell."
 fi
@@ -599,5 +575,5 @@ note "data/raw/$(basename "${COUNTS}")   md5=$(md5sum "${COUNTS}" | cut -d' ' -f
 log "results/ : untouched and md5-verified against the pre-run snapshot."
 log "full transcript: ${LOG}"
 log "next (only when you decide to re-run the pipeline):"
-note "cd \"${REPO}\" && conda activate r_deseq_env && Rscript scripts/01_deseq2_analysis.R"
+note "cd \"${REPO}\" && conda activate loy-rnaseq && Rscript scripts/01_deseq2_analysis.R"
 log "DONE"
