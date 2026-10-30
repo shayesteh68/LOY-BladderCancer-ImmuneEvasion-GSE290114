@@ -1,0 +1,3 @@
+"direction","mapped_gene_ids","background_gene_ids","significant_pathways","status","analysis_date","annotation_source"
+"downregulated",531,14904,48,"significant_pathways_found","2026-10-29","KEGG REST API (mouse/mmu)"
+"upregulated",164,14904,0,"no_significant_pathways","2026-10-29","KEGG REST API (mouse/mmu)"

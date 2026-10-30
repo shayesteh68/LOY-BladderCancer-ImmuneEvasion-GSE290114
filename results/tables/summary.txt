@@ -1,0 +1,10 @@
+GSE290114 DESeq2 run summary
+Samples: 6 (Y_Scr=3; Y_KO=3)
+Design: ~ condition; contrast: Y_KO versus Y_Scr
+Count filter: row sum >= 10 across samples
+DEG thresholds: BH adjusted p-value < 0.05 and absolute log2 fold change >= 1
+Genes tested: 16684
+Significant DEGs: 765 (up in Y_KO: 181; down in Y_KO: 584)
+R: R version 4.4.3 (2025-02-28)
+DESeq2: 1.46.0
+ggplot2: 4.0.3

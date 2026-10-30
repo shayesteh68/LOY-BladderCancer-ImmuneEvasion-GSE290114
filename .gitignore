@@ -1,0 +1,6 @@
+data/raw/
+data/reference/
+data/annotation/
+.Rhistory
+.RData
+.Rproj.user/

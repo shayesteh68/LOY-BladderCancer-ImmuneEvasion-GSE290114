@@ -3,9 +3,9 @@ channels:
   - conda-forge
   - bioconda
 dependencies:
-  - r-base>=4.3.0
-  - bioconductor-deseq2
-  - bioconductor-clusterprofiler
-  - bioconductor-org.mm.eg.db
-  - r-pheatmap
-  - r-ggplot2
+  - r-base=4.4.3
+  - bioconductor-deseq2=1.46.0
+  - bioconductor-clusterprofiler=4.14.0
+  - bioconductor-go.db=3.20.0
+  - r-pheatmap=1.0.13
+  - r-ggplot2=4.0.3
