@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  restore_loy_inputs.sh      version 1.0.9
+#  restore_loy_inputs.sh      version 1.0.10
 #  Project : LOY / GSE290114   (repo: github.com/shayesteh68)
 #
 #  CHANGELOG
-#    1.0.9 - WSL-safe checkout on Windows.
-#            * Pair LF attributes with a content update so existing clones refresh the script.
+#    1.0.10 - tolerate CRLF samplesheets in Windows Git checkouts.
+#            * Pair LF shell-script attributes with CR stripping during samplesheet validation.
 #    1.0.8 - audit safety and documentation update.
 #            * STEP 6 is read-only; the script never stages, commits, or pushes.
 #            * error and usage messages no longer imply that Git changes are made.
@@ -108,7 +108,7 @@ fi
 
 set -Eeuo pipefail
 
-VERSION="1.0.9"
+VERSION="1.0.10"
 TS="$(date +%Y%m%d_%H%M%S)"
 LOG="${HOME}/loy_restore_inputs_${TS}.log"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/loy_restore.XXXXXX")"
@@ -478,7 +478,7 @@ if [ -s "${SHEET}" ]; then
     sample_id,condition*) ok "samplesheet header starts with: ${shdr}" ;;
     *) bad "samplesheet header is '${shdr}' - scripts/01_deseq2_analysis.R expects the first columns to be sample_id,condition" ;;
   esac
-  cut -d',' -f2 "${SHEET}" | tail -n +2 | sed 's/^"//; s/"$//' | sed '/^$/d' | sort -u > "${TMP}/conds.txt"
+  cut -d',' -f2 "${SHEET}" | tail -n +2 | tr -d '\r' | sed 's/^"//; s/"$//' | sed '/^$/d' | sort -u > "${TMP}/conds.txt"
   while IFS= read -r cc; do
     case " ${EXPECTED_CONDITIONS} " in *" ${cc} "*) ok "condition value used: ${cc}" ;; *) bad "unexpected condition value: '${cc}' (expected ${EXPECTED_CONDITIONS})" ;; esac
     n=$(awk -F, -v c="${cc}" 'NR>1 { v=$2; gsub(/"/,"",v); gsub(/\r/,"",v); if (v==c) k++ } END { print k+0 }' "${SHEET}"); note "n(${cc}) = ${n}"
