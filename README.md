@@ -2,6 +2,10 @@
 
 This repository analyzes the six bulk RNA-seq samples from the MB49 mouse bladder cancer experiment in GEO series GSE290114: three Y-chromosome knockout (`Y_KO`) replicates and three scrambled-control (`Y_Scr`) replicates.
 
+## Data source and relationship to the study
+
+GSE290114 is part of Chen et al., “Concurrent loss of the Y chromosome in cancer and T cells impacts outcome,” *Nature* (2025), [doi:10.1038/s41586-025-09071-2](https://doi.org/10.1038/s41586-025-09071-2). This repository is an independent, six-sample reanalysis of the MB49 Y-KO versus Y-Scr bulk RNA-seq subset, not a reproduction of the paper’s broader pan-cancer study. It was not commissioned by, or conducted in collaboration with, the authors or their institutions.
+
 ## Workflow and current outputs
 
 Run the scripts in order from the repository root:
